@@ -65,8 +65,13 @@ export default function Home() {
   useEffect(() => { if (ready) save(K.sessions, sessions); }, [ready, sessions]);
 
   const keyHeader = useMemo<Record<string, string>>(
-    () => (settings.apiKey ? { "x-api-key": settings.apiKey } : ({} as Record<string, string>)),
-    [settings.apiKey],
+    () => {
+      const h: Record<string, string> = {};
+      if (settings.apiKey) h["x-api-key"] = settings.apiKey;
+      if (settings.provider) h["x-provider"] = settings.provider;
+      return h;
+    },
+    [settings.apiKey, settings.provider],
   );
 
   useEffect(() => {
@@ -87,6 +92,15 @@ export default function Home() {
   const messages = chats[bot.id] ?? [];
   const model = bot.model || settings.model || serverDefault;
   const noKey = keyChecked && !settings.apiKey && !serverHasKey;
+
+  // First visit on a deployment without a server key: ask for the user's own key right away
+  const askedForKey = useRef(false);
+  useEffect(() => {
+    if (noKey && !askedForKey.current) {
+      askedForKey.current = true;
+      setShowSettings(true);
+    }
+  }, [noKey]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
@@ -239,8 +253,7 @@ export default function Home() {
         <div className="messages">
           {noKey && (
             <div className="banner">
-              No API key yet. <button className="link" onClick={() => setShowSettings(true)}>Add one in Settings</button> or set
-              <code>XAI_API_KEY</code> in <code>.env.local</code>.
+              No API key yet. <button className="link" onClick={() => setShowSettings(true)}>Add your own key in Settings</button> to start chatting.
             </div>
           )}
           {messages.length === 0 ? (

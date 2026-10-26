@@ -1,9 +1,24 @@
-// Server-only helpers for talking to xAI (or any OpenAI-compatible endpoint).
-export const BASE_URL = (process.env.XAI_BASE_URL || "https://api.x.ai/v1").replace(/\/$/, "");
-export const DEFAULT_MODEL = process.env.DEFAULT_MODEL || "grok-4";
+// Server-only helpers for talking to an OpenAI-compatible endpoint.
+import { PROVIDERS, type ProviderId } from "./providers";
 
-// Key from the user's Settings (sent per request) wins; otherwise fall back to the server env key.
-export function resolveKey(req: Request): string | null {
-  const fromClient = req.headers.get("x-api-key")?.trim();
-  return fromClient || process.env.XAI_API_KEY || null;
+const ENV_BASE_URL = process.env.XAI_BASE_URL?.replace(/\/$/, "");
+const ENV_DEFAULT_MODEL = process.env.DEFAULT_MODEL;
+
+export type Upstream = { baseUrl: string; key: string | null; defaultModel: string };
+
+// Users pick a provider from a fixed allowlist (never a raw URL), so the server can't be used
+// as an open proxy. With no provider chosen, the server's own .env settings apply.
+export function resolveUpstream(req: Request): Upstream {
+  const clientKey = req.headers.get("x-api-key")?.trim() || null;
+  const providerId = req.headers.get("x-provider") as ProviderId | null;
+  const provider = providerId ? PROVIDERS.find((p) => p.id === providerId) : undefined;
+
+  if (provider) {
+    return { baseUrl: provider.baseUrl, key: clientKey, defaultModel: provider.defaultModel };
+  }
+  return {
+    baseUrl: ENV_BASE_URL || PROVIDERS[0].baseUrl,
+    key: clientKey || process.env.XAI_API_KEY || null,
+    defaultModel: ENV_DEFAULT_MODEL || PROVIDERS[0].defaultModel,
+  };
 }

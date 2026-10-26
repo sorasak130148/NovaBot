@@ -34,6 +34,15 @@ Two ways to supply it:
   `qwen3.8-flash`. `grok-4.7` uses a different protocol and fails.
 - OpenCode describes Go as built for coding agents and monitors traffic, so check their terms before heavy use.
 
+## Deploy for other people (bring your own key)
+
+1. Import this repo on [vercel.com/new](https://vercel.com/new). No build settings needed.
+2. **Don't** set `XAI_API_KEY` there. Without a server key, every visitor is asked for their own key and picks a
+   provider (OpenCode Go, OpenCode Zen, xAI, OpenRouter) in Settings. Nobody can spend your money.
+3. Provider URLs are fixed in `lib/providers.ts`; visitors can't point the server at arbitrary URLs.
+
+Keys pass through your server on each request (never logged or stored), so visitors have to trust whoever runs it.
+
 ## Features
 - Bot list with search, a primary Bot, and Bots created from templates (Chief of Staff, Inbox Triage,
   Invoice Chaser, Researcher, Customer Support) or from scratch

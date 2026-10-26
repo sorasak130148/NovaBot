@@ -1,4 +1,4 @@
-import { BASE_URL, DEFAULT_MODEL, resolveKey } from "@/lib/upstream";
+import { resolveUpstream } from "@/lib/upstream";
 
 export const runtime = "nodejs";
 
@@ -9,19 +9,21 @@ type Body = {
 };
 
 export async function POST(req: Request) {
-  const key = resolveKey(req);
+  const { baseUrl, key, defaultModel } = resolveUpstream(req);
   if (!key) {
-    return new Response("No API key. Add one in Settings or set XAI_API_KEY in .env.local.", { status: 401 });
+    return new Response("No API key. Add your key in Settings.", { status: 401 });
   }
 
-  const body = (await req.json()) as Body;
+  const raw = await req.text();
+  if (raw.length > 400_000) return new Response("Conversation too long. Reset the chat and try again.", { status: 413 });
+  const body = JSON.parse(raw) as Body;
   const sessionId = req.headers.get("x-session-id")?.slice(0, 100);
   const messages = [
     ...(body.system ? [{ role: "system", content: body.system }] : []),
     ...body.messages.slice(-40),
   ];
 
-  const upstream = await fetch(`${BASE_URL}/chat/completions`, {
+  const upstream = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -29,7 +31,7 @@ export async function POST(req: Request) {
       "User-Agent": "NovaBot/0.1",
       ...(sessionId ? { "x-opencode-session": sessionId } : {}),
     },
-    body: JSON.stringify({ model: body.model || DEFAULT_MODEL, messages, stream: true }),
+    body: JSON.stringify({ model: body.model || defaultModel, messages, stream: true }),
     signal: req.signal,
   });
 

@@ -1,3 +1,5 @@
+import type { ProviderId } from "./providers";
+
 export type Bot = {
   id: string;
   name: string;
@@ -11,7 +13,7 @@ export type Bot = {
 
 export type Msg = { role: "user" | "assistant"; content: string; error?: boolean };
 
-export type Settings = { apiKey: string; model: string };
+export type Settings = { apiKey: string; model: string; provider?: ProviderId };
 
 export type EyeStyle = "oval" | "arc" | "bar" | "dot";
 
