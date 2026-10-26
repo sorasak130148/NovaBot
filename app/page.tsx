@@ -10,6 +10,7 @@ import { SettingsModal } from "@/components/SettingsModal";
 import { PRIMARY_BOT, newId, type Bot, type Group, type Msg, type Settings, type Template } from "@/lib/bots";
 import { groupHistory, groupSystemPrompt, pickSpeakers } from "@/lib/group";
 import { templateFromHash } from "@/lib/share";
+import { NOVA_MARK_SVG } from "@/lib/novaMark";
 
 const K = {
   bots: "grokbot.bots",
@@ -304,7 +305,7 @@ export default function Home() {
     <div className={`app ${sidebarOpen ? "sidebar-open" : ""}`}>
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark">◐</span>
+          <span className="brand-mark" aria-hidden="true" dangerouslySetInnerHTML={{ __html: NOVA_MARK_SVG }} />
           <span>NovaBot</span>
         </div>
         <input className="search" placeholder="Search" value={query} onChange={(e) => setQuery(e.target.value)} />
