@@ -8,7 +8,7 @@ import { BotEditor } from "@/components/BotEditor";
 import { GroupEditor } from "@/components/GroupEditor";
 import { RoutinesModal } from "@/components/RoutinesModal";
 import { SettingsModal } from "@/components/SettingsModal";
-import { PRIMARY_BOT, newId, type Bot, type Group, type Msg, type Settings, type Template } from "@/lib/bots";
+import { PRIMARY_BOT, newId, uuid, type Bot, type Group, type Msg, type Settings, type Template } from "@/lib/bots";
 import { groupHistory, groupSystemPrompt, pickSpeakers } from "@/lib/group";
 import { templateFromHash } from "@/lib/share";
 import { NOVA_MARK_SVG } from "@/lib/novaMark";
@@ -300,7 +300,7 @@ export default function Home() {
   function sessionFor(key: string) {
     let id = sessions[key];
     if (!id) {
-      id = crypto.randomUUID();
+      id = uuid();
       const created = id;
       setSessions((all) => ({ ...all, [key]: created }));
     }
