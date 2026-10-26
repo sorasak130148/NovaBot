@@ -1,3 +1,4 @@
+import type { Attachment } from "./attachments";
 import type { ProviderId } from "./providers";
 
 export type Bot = {
@@ -19,6 +20,7 @@ export type Msg = {
   botId?: string;
   // Set on the prompt a Routine sent; `late` when it ran after its scheduled time (catch-up)
   routine?: { name: string; late?: boolean };
+  attachments?: Attachment[];
 };
 
 export type Group = { id: string; name: string; memberIds: string[] };

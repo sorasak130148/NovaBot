@@ -66,6 +66,8 @@ In server mode routines run on the server, on time, even with every browser clos
 - Routines: give a Bot a prompt to run on a schedule (every day, weekdays, chosen weekdays, every N minutes/hours,
   or once). Results land in that Bot's chat with a ⏰ label, a sidebar dot and a notification. Runs while NovaBot is
   open in a tab; missed runs catch up when you open it again, and only one tab runs them
+- Attach up to 4 photos or files per message (📎, paste, or drag and drop). Photos are downscaled and sent as vision
+  input; text/code/CSV/JSON files are read in the browser; PDF and DOCX text is extracted by `/api/extract`
 - Model picker in the chat header to switch models at any time; each Bot remembers its choice
 - Streaming replies (reasoning models included), markdown/GFM, stop and reset
 - Bots and chats live in localStorage, no database

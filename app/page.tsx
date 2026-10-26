@@ -12,6 +12,7 @@ import { PRIMARY_BOT, newId, uuid, type Bot, type Group, type Msg, type Settings
 import { groupHistory, groupSystemPrompt, pickSpeakers } from "@/lib/group";
 import { templateFromHash } from "@/lib/share";
 import { NOVA_MARK_SVG } from "@/lib/novaMark";
+import { ACCEPT, MAX_ATTACHMENTS, formatBytes, readAttachment, toApiMessages, type ApiContent, type Attachment } from "@/lib/attachments";
 import { computeNext, type Routine, type Schedule } from "@/lib/routines";
 
 const K = {
@@ -62,6 +63,24 @@ function AvatarStack({ members, size }: { members: Bot[]; size: number }) {
   );
 }
 
+function AttachmentList({ items }: { items: Attachment[] }) {
+  return (
+    <div className="attachments">
+      {items.map((a, i) =>
+        a.kind === "image" ? (
+          <a key={i} href={a.dataUrl} target="_blank" rel="noreferrer" className="att-image" title={a.name}>
+            <img src={a.dataUrl} alt={a.name} />
+          </a>
+        ) : (
+          <span key={i} className="att-file" title={a.truncated ? "Long file: only the first part was sent" : a.name}>
+            📄 {a.name} <small>{formatBytes(a.size)}{a.truncated ? " · cut" : ""}</small>
+          </span>
+        ),
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const [ready, setReady] = useState(false);
   const [bots, setBots] = useState<Bot[]>([PRIMARY_BOT]);
@@ -90,6 +109,11 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [input, setInput] = useState("");
+  const [pending, setPending] = useState<Attachment[]>([]);
+  const [attaching, setAttaching] = useState(0);
+  const [attachError, setAttachError] = useState("");
+  const [dragOver, setDragOver] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [streaming, setStreaming] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -310,7 +334,7 @@ export default function Home() {
   // Streams one reply into the last message of conversation `id`; returns the full text.
   async function streamInto(
     id: string,
-    body: { model: string; system: string; messages: { role: string; content: string }[] },
+    body: { model: string; system: string; messages: { role: string; content: ApiContent }[] },
     sessionId: string,
     signal: AbortSignal,
     acc: { text: string } = { text: "" },
@@ -348,7 +372,7 @@ export default function Home() {
     try {
       await streamInto(
         b.id,
-        { model: modelFor(b), system: b.instructions, messages: transcript.map(({ role, content }) => ({ role, content })) },
+        { model: modelFor(b), system: b.instructions, messages: toApiMessages(transcript) },
         sessionFor(b.id),
         signal,
         acc,
@@ -406,11 +430,16 @@ export default function Home() {
 
   async function send() {
     const text = input.trim();
-    if (!text || streaming) return;
+    if ((!text && !pending.length) || streaming || attaching) return;
     if (group && members.length === 0) return;
     const id = convId;
-    const transcript: Msg[] = [...messages.filter((m) => !m.error), { role: "user", content: text }];
+    const transcript: Msg[] = [
+      ...messages.filter((m) => !m.error),
+      { role: "user", content: text, ...(pending.length ? { attachments: pending } : {}) },
+    ];
     setInput("");
+    setPending([]);
+    setAttachError("");
     setMessages(id, () => transcript);
     setStreaming(true);
     const ctrl = new AbortController();
@@ -459,6 +488,25 @@ export default function Home() {
       persistTurn(id, [userMsg, ...produced]);
       setStreaming(false);
       abortRef.current = null;
+    }
+  }
+
+  async function addFiles(files: FileList | File[]) {
+    const list = Array.from(files);
+    if (!list.length) return;
+    const room = MAX_ATTACHMENTS - pending.length;
+    if (room <= 0) return setAttachError(`Up to ${MAX_ATTACHMENTS} files per message`);
+    setAttachError(list.length > room ? `Only the first ${room} file(s) were added (max ${MAX_ATTACHMENTS})` : "");
+    for (const f of list.slice(0, room)) {
+      setAttaching((n) => n + 1);
+      try {
+        const a = await readAttachment(f);
+        setPending((p) => (p.length < MAX_ATTACHMENTS ? [...p, a] : p));
+      } catch (err) {
+        setAttachError((err as Error).message);
+      } finally {
+        setAttaching((n) => n - 1);
+      }
     }
   }
 
@@ -541,7 +589,10 @@ export default function Home() {
   const q = query.toLowerCase();
   const filteredBots = bots.filter((b) => b.name.toLowerCase().includes(q));
   const filteredGroups = groups.filter((g) => g.name.toLowerCase().includes(q));
-  const lastPreview = (id: string) => chats[id]?.at(-1)?.content?.slice(0, 60);
+  const lastPreview = (id: string) => {
+    const m = chats[id]?.at(-1);
+    return m && (m.content?.slice(0, 60) || (m.attachments?.length ? `📎 ${m.attachments.length} attachment(s)` : ""));
+  };
   const select = (id: string) => {
     setActiveId(id);
     setSidebarOpen(false);
@@ -668,13 +719,19 @@ export default function Home() {
                   {m.role === "assistant" && (
                     speaker ? <BlobAvatar color={speaker.color} eyes={speaker.eyes} size={28} /> : <BlobAvatar color="#8E8E93" eyes="dot" size={28} />
                   )}
-                  <div className="bubble">
-                    {group && m.role === "assistant" && <div className="speaker">{speaker?.name ?? "Deleted Bot"}</div>}
-                    {m.routine && <div className="routine-label">⏰ Routine · {m.routine.name}{m.routine.late ? " · ran late" : ""}</div>}
-                    {m.role === "assistant" ? (
-                      m.content ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown> : <span className="typing"><i /><i /><i /></span>
-                    ) : (
-                      m.content
+                  {/* Attachments sit above the text bubble, like a photo in a messenger app */}
+                  <div className="msg-stack">
+                    {m.attachments?.length ? <AttachmentList items={m.attachments} /> : null}
+                    {(m.role === "assistant" || m.content || m.routine) && (
+                      <div className="bubble">
+                        {group && m.role === "assistant" && <div className="speaker">{speaker?.name ?? "Deleted Bot"}</div>}
+                        {m.routine && <div className="routine-label">⏰ Routine · {m.routine.name}{m.routine.late ? " · ran late" : ""}</div>}
+                        {m.role === "assistant" ? (
+                          m.content ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown> : <span className="typing"><i /><i /><i /></span>
+                        ) : (
+                          m.content
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -684,7 +741,24 @@ export default function Home() {
           <div ref={endRef} />
         </div>
 
-        <div className="composer-wrap">
+        <div
+          className={`composer-wrap ${dragOver ? "drag" : ""}`}
+          onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDragOver(true); } }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { if (e.dataTransfer.files.length) { e.preventDefault(); setDragOver(false); void addFiles(e.dataTransfer.files); } }}
+        >
+          {(pending.length > 0 || attaching > 0 || attachError) && (
+            <div className="pending">
+              {pending.map((a, i) => (
+                <div key={i} className={`pending-item ${a.kind}`}>
+                  {a.kind === "image" ? <img src={a.dataUrl} alt={a.name} /> : <span className="file-badge">📄 {a.name}<small>{formatBytes(a.size)}</small></span>}
+                  <button type="button" className="remove" aria-label={`Remove ${a.name}`} onClick={() => setPending((p) => p.filter((_, j) => j !== i))}>✕</button>
+                </div>
+              ))}
+              {attaching > 0 && <div className="pending-item loading">Reading…</div>}
+              {attachError && <p className="hint warn attach-error">{attachError}</p>}
+            </div>
+          )}
           {group && members.length > 0 && (
             <div className="mention-chips">
               {members.map((b) => (
@@ -695,12 +769,20 @@ export default function Home() {
             </div>
           )}
           <form className="composer" onSubmit={(e) => { e.preventDefault(); send(); }}>
+            <input ref={fileRef} type="file" accept={ACCEPT} multiple hidden
+              onChange={(e) => { if (e.target.files) void addFiles(e.target.files); e.target.value = ""; }} />
+            <button type="button" className="attach" aria-label="Attach photos or files" title="Attach photos or files"
+              disabled={pending.length >= MAX_ATTACHMENTS} onClick={() => fileRef.current?.click()}>📎</button>
             <textarea
               ref={inputRef}
               value={input}
               rows={1}
               placeholder={group ? `Message ${group.name}` : `Message ${bot!.name}`}
               onChange={(e) => setInput(e.target.value)}
+              onPaste={(e) => {
+                const files = Array.from(e.clipboardData.files);
+                if (files.length) { e.preventDefault(); void addFiles(files); }
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
@@ -711,7 +793,7 @@ export default function Home() {
             {streaming ? (
               <button type="button" className="send stop" onClick={() => abortRef.current?.abort()} aria-label="Stop">■</button>
             ) : (
-              <button type="submit" className="send" disabled={!input.trim() || (!!group && members.length === 0)} aria-label="Send">↑</button>
+              <button type="submit" className="send" disabled={(!input.trim() && !pending.length) || attaching > 0 || (!!group && members.length === 0)} aria-label="Send">↑</button>
             )}
           </form>
         </div>

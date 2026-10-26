@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 type Body = {
   model?: string;
   system?: string;
-  messages: { role: "user" | "assistant"; content: string }[];
+  messages: { role: "user" | "assistant"; content: unknown }[];
 };
 
 export async function POST(req: Request) {
@@ -15,7 +15,7 @@ export async function POST(req: Request) {
   }
 
   const raw = await req.text();
-  if (raw.length > 400_000) return new Response("Conversation too long. Reset the chat and try again.", { status: 413 });
+  if (raw.length > 12_000_000) return new Response("Conversation too long. Reset the chat and try again.", { status: 413 });
   const body = JSON.parse(raw) as Body;
   const sessionId = req.headers.get("x-session-id")?.slice(0, 100);
   const messages = [

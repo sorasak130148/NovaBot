@@ -2,6 +2,7 @@
 // Enabled only when NOVABOT_DATA_DIR is set, e.g. on a home server.
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { Attachment } from "../attachments";
 import { PRIMARY_BOT, type Bot, type Group, type Msg } from "../bots";
 import { computeNext, type Routine } from "../routines";
 
@@ -79,7 +80,24 @@ export function sanitizeMessages(input: unknown): Msg[] {
       ...(m.error ? { error: true } : {}),
       ...(typeof m.botId === "string" ? { botId: m.botId } : {}),
       ...(m.routine && typeof m.routine.name === "string" ? { routine: { name: m.routine.name.slice(0, 100), late: !!m.routine.late } } : {}),
+      ...(Array.isArray(m.attachments) ? { attachments: sanitizeAttachments(m.attachments) } : {}),
     }));
+}
+
+function sanitizeAttachments(list: unknown[]): Attachment[] {
+  return list
+    .slice(0, 4)
+    .flatMap((a): Attachment[] => {
+      const x = a as Record<string, unknown>;
+      const name = String(x.name ?? "file").slice(0, 200);
+      if (x.kind === "image" && typeof x.dataUrl === "string" && /^data:image\/(jpeg|png|webp|gif);base64,/.test(x.dataUrl) && x.dataUrl.length < 4_000_000) {
+        return [{ kind: "image", name, dataUrl: x.dataUrl }];
+      }
+      if (x.kind === "file" && typeof x.text === "string") {
+        return [{ kind: "file", name, size: Number(x.size) || 0, text: x.text.slice(0, 60_000), truncated: !!x.truncated }];
+      }
+      return [];
+    });
 }
 
 export function appendMessages(data: StoreData, conv: string, msgs: Msg[]) {

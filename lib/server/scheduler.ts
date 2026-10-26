@@ -1,4 +1,5 @@
 // Server-side routine runner (server mode). Started once from instrumentation.ts.
+import { apiContent } from "../attachments";
 import { computeNext } from "../routines";
 import { serverUpstream } from "../upstream";
 import { appendMessages, getStore, mutate, type StoredRoutine } from "./store";
@@ -59,7 +60,7 @@ export async function runRoutine(id: string, manual = false) {
   try {
     reply = await complete(
       bot.model ?? "",
-      [{ role: "system", content: bot.instructions }, ...history.map(({ role, content }) => ({ role, content })), { role: "user", content: r.prompt }],
+      [{ role: "system", content: bot.instructions }, ...history.map((m) => ({ role: m.role, content: apiContent(m, false) as string })), { role: "user", content: r.prompt }],
       `routine-${r.id}`,
     );
   } catch (err) {
