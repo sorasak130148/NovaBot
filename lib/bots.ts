@@ -11,7 +11,10 @@ export type Bot = {
   primary?: boolean;
 };
 
-export type Msg = { role: "user" | "assistant"; content: string; error?: boolean };
+// In group chats, assistant messages record which Bot spoke
+export type Msg = { role: "user" | "assistant"; content: string; error?: boolean; botId?: string };
+
+export type Group = { id: string; name: string; memberIds: string[] };
 
 export type Settings = { apiKey: string; model: string; provider?: ProviderId };
 
