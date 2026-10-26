@@ -12,7 +12,14 @@ export type Bot = {
 };
 
 // In group chats, assistant messages record which Bot spoke
-export type Msg = { role: "user" | "assistant"; content: string; error?: boolean; botId?: string };
+export type Msg = {
+  role: "user" | "assistant";
+  content: string;
+  error?: boolean;
+  botId?: string;
+  // Set on the prompt a Routine sent; `late` when it ran after its scheduled time (catch-up)
+  routine?: { name: string; late?: boolean };
+};
 
 export type Group = { id: string; name: string; memberIds: string[] };
 

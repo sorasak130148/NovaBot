@@ -6,11 +6,13 @@ import remarkGfm from "remark-gfm";
 import { BlobAvatar } from "@/components/BlobAvatar";
 import { BotEditor } from "@/components/BotEditor";
 import { GroupEditor } from "@/components/GroupEditor";
+import { RoutinesModal } from "@/components/RoutinesModal";
 import { SettingsModal } from "@/components/SettingsModal";
 import { PRIMARY_BOT, newId, type Bot, type Group, type Msg, type Settings, type Template } from "@/lib/bots";
 import { groupHistory, groupSystemPrompt, pickSpeakers } from "@/lib/group";
 import { templateFromHash } from "@/lib/share";
 import { NOVA_MARK_SVG } from "@/lib/novaMark";
+import { computeNext, type Routine, type Schedule } from "@/lib/routines";
 
 const K = {
   bots: "grokbot.bots",
@@ -19,6 +21,8 @@ const K = {
   settings: "grokbot.settings",
   active: "grokbot.active",
   sessions: "grokbot.sessions",
+  routines: "grokbot.routines",
+  unread: "grokbot.unread",
 };
 
 // Chats, sessions and the active view are keyed by Bot id, or by Group id (always "g_..." so they never collide)
@@ -68,6 +72,9 @@ export default function Home() {
   const [keyChecked, setKeyChecked] = useState(false);
   const [editor, setEditor] = useState<{ bot?: Bot; preset?: Template } | null>(null);
   const [groupEditor, setGroupEditor] = useState<{ group?: Group } | null>(null);
+  const [routines, setRoutines] = useState<Routine[]>([]);
+  const [unread, setUnread] = useState<Record<string, boolean>>({});
+  const [showRoutines, setShowRoutines] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -76,6 +83,13 @@ export default function Home() {
   const abortRef = useRef<AbortController | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // The scheduler runs from a long-lived interval, so it reads the latest state through refs
+  const chatsRef = useRef(chats);
+  chatsRef.current = chats;
+  const streamingRef = useRef(false);
+  streamingRef.current = streaming;
+  const routinesRef = useRef(routines);
+  routinesRef.current = routines;
 
   useEffect(() => {
     // Older saves named the primary Bot "Grok"; rename it to match the app name
@@ -85,6 +99,8 @@ export default function Home() {
     setSettings(load(K.settings, { apiKey: "", model: "" }));
     setActiveId(load(K.active, PRIMARY_BOT.id));
     setSessions(load(K.sessions, {}));
+    setRoutines(load(K.routines, []));
+    setUnread(load(K.unread, {}));
     // Opened from a share link: offer to add that Bot, then drop the hash from the address bar
     const shared = templateFromHash(window.location.hash);
     if (shared) {
@@ -100,6 +116,8 @@ export default function Home() {
   useEffect(() => { if (ready) save(K.settings, settings); }, [ready, settings]);
   useEffect(() => { if (ready) save(K.active, activeId); }, [ready, activeId]);
   useEffect(() => { if (ready) save(K.sessions, sessions); }, [ready, sessions]);
+  useEffect(() => { if (ready) save(K.routines, routines); }, [ready, routines]);
+  useEffect(() => { if (ready) save(K.unread, unread); }, [ready, unread]);
 
   const keyHeader = useMemo<Record<string, string>>(
     () => {
@@ -146,6 +164,32 @@ export default function Home() {
     endRef.current?.scrollIntoView({ block: "end" });
   }, [messages.length, messages[messages.length - 1]?.content]);
 
+  // Scheduler: only one tab (the Web Locks holder) runs routines; checks every 20s and on load,
+  // so runs missed while the site was closed catch up right away.
+  useEffect(() => {
+    if (!ready) return;
+    let leader = !("locks" in navigator);
+    let release: (() => void) | undefined;
+    if (!leader) {
+      navigator.locks.request("novabot-scheduler", () => {
+        leader = true;
+        return new Promise<void>((resolve) => (release = resolve));
+      });
+    }
+    const tick = () => {
+      if (!leader || streamingRef.current) return;
+      const due = routinesRef.current.find((r) => r.enabled && r.nextRunAt !== null && r.nextRunAt <= Date.now());
+      if (due) void runRoutineRef.current(due);
+    };
+    const first = setTimeout(tick, 1500);
+    const timer = setInterval(tick, 20_000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+      release?.();
+    };
+  }, [ready]);
+
   const setMessages = useCallback(
     (id: string, fn: (prev: Msg[]) => Msg[]) => setChats((c) => ({ ...c, [id]: fn(c[id] ?? []) })),
     [],
@@ -189,6 +233,67 @@ export default function Home() {
 
   const failMessage = (err: unknown) => `Bot failed to respond. ${(err as Error).message}`;
 
+  // One reply from a single Bot to `transcript` (which already ends with the user's message).
+  // Returns an error message, or null on success/abort.
+  async function runBotTurn(b: Bot, transcript: Msg[], signal: AbortSignal): Promise<string | null> {
+    setMessages(b.id, () => [...transcript, { role: "assistant", content: "" }]);
+    try {
+      await streamInto(
+        b.id,
+        { model: modelFor(b), system: b.instructions, messages: transcript.map(({ role, content }) => ({ role, content })) },
+        sessionFor(b.id),
+        signal,
+      );
+      return null;
+    } catch (err) {
+      if ((err as Error).name === "AbortError") return null;
+      setMessages(b.id, (prev) => [...prev.slice(0, -1), { role: "assistant", content: failMessage(err), error: true }]);
+      return (err as Error).message.slice(0, 200);
+    }
+  }
+
+  async function runRoutine(r: Routine, manual = false) {
+    const b = bots.find((x) => x.id === r.botId);
+    const now = Date.now();
+    const advance = (patch: Partial<Routine>) =>
+      setRoutines((all) =>
+        all.map((x) => {
+          if (x.id !== r.id) return x;
+          const nextRunAt = computeNext(x.schedule, now);
+          return { ...x, lastRunAt: now, nextRunAt, enabled: x.enabled && nextRunAt !== null, ...patch };
+        }),
+      );
+    if (!b) {
+      advance({ enabled: false, lastError: "Bot was deleted" });
+      return;
+    }
+    const late = !manual && !!r.nextRunAt && now - r.nextRunAt > 2 * 60_000;
+    const transcript: Msg[] = [
+      ...(chatsRef.current[b.id] ?? []).filter((m) => !m.error),
+      { role: "user", content: r.prompt, routine: { name: r.name, late } },
+    ];
+    // Advance first so a crash or reload mid-run can't fire the same run twice
+    advance({});
+    setStreaming(true);
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    try {
+      const error = await runBotTurn(b, transcript, ctrl.signal);
+      setRoutines((all) => all.map((x) => (x.id === r.id ? { ...x, lastError: error ?? undefined } : x)));
+      if (!manual) {
+        setUnread((u) => ({ ...u, [b.id]: true }));
+        if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+          new Notification(`${b.name} · ${r.name}`, { body: error ? "Routine failed" : "New result is ready", tag: r.id });
+        }
+      }
+    } finally {
+      setStreaming(false);
+      abortRef.current = null;
+    }
+  }
+  const runRoutineRef = useRef(runRoutine);
+  runRoutineRef.current = runRoutine;
+
   async function send() {
     const text = input.trim();
     if (!text || streaming) return;
@@ -203,14 +308,7 @@ export default function Home() {
 
     try {
       if (!group) {
-        const b = bot!;
-        setMessages(id, (prev) => [...prev, { role: "assistant", content: "" }]);
-        try {
-          await streamInto(id, { model: modelFor(b), system: b.instructions, messages: transcript }, sessionFor(id), ctrl.signal);
-        } catch (err) {
-          if ((err as Error).name === "AbortError") return;
-          setMessages(id, (prev) => [...prev.slice(0, -1), { role: "assistant", content: failMessage(err), error: true }]);
-        }
+        await runBotTurn(bot!, transcript, ctrl.signal);
         return;
       }
 
@@ -258,9 +356,32 @@ export default function Home() {
     setEditor(null);
   }
 
+  function saveRoutine(d: { id?: string; name: string; prompt: string; schedule: Schedule }) {
+    const nextRunAt = computeNext(d.schedule, Date.now());
+    if (d.id) {
+      setRoutines((all) => all.map((r) => (r.id === d.id ? { ...r, ...d, nextRunAt, enabled: nextRunAt !== null, lastError: undefined } : r)));
+    } else {
+      setRoutines((all) => [...all, { id: newId(), botId: activeId, name: d.name.trim(), prompt: d.prompt.trim(), schedule: d.schedule, enabled: true, nextRunAt }]);
+    }
+    // Ask once so finished routines can notify while the tab is in the background
+    if ("Notification" in window && Notification.permission === "default") void Notification.requestPermission();
+  }
+
+  function toggleRoutine(id: string) {
+    setRoutines((all) =>
+      all.map((r) => {
+        if (r.id !== id) return r;
+        if (r.enabled) return { ...r, enabled: false };
+        const nextRunAt = computeNext(r.schedule, Date.now());
+        return { ...r, enabled: nextRunAt !== null, nextRunAt };
+      }),
+    );
+  }
+
   function deleteBot(id: string) {
-    if (!confirm("Delete this Bot? Its chat history will be removed too.")) return;
+    if (!confirm("Delete this Bot? Its chat history and routines will be removed too.")) return;
     setBots((all) => all.filter((b) => b.id !== id));
+    setRoutines((all) => all.filter((r) => r.botId !== id));
     setGroups((all) => all.map((g) => ({ ...g, memberIds: g.memberIds.filter((m) => m !== id) })));
     setChats(({ [id]: _, ...rest }) => rest);
     setActiveId(PRIMARY_BOT.id);
@@ -295,7 +416,13 @@ export default function Home() {
   const filteredBots = bots.filter((b) => b.name.toLowerCase().includes(q));
   const filteredGroups = groups.filter((g) => g.name.toLowerCase().includes(q));
   const lastPreview = (id: string) => chats[id]?.at(-1)?.content?.slice(0, 60);
-  const select = (id: string) => { setActiveId(id); setSidebarOpen(false); };
+  const select = (id: string) => {
+    setActiveId(id);
+    setSidebarOpen(false);
+    setUnread(({ [id]: _, ...rest }) => rest);
+  };
+  const botRoutines = bot ? routines.filter((r) => r.botId === bot.id) : [];
+  const hasRoutines = (id: string) => routines.some((r) => r.botId === id && r.enabled);
 
   if (!ready) return <div className="app" />;
 
@@ -315,7 +442,12 @@ export default function Home() {
             <button key={b.id} className={`bot-row ${b.id === activeId ? "active" : ""}`} onClick={() => select(b.id)}>
               <BlobAvatar color={b.color} eyes={b.eyes} size={40} />
               <span className="bot-meta">
-                <span className="bot-name">{b.name}{b.primary && <span className="tag">Primary</span>}</span>
+                <span className="bot-name">
+                  {b.name}
+                  {b.primary && <span className="tag">Primary</span>}
+                  {hasRoutines(b.id) && <span className="routine-mark" title="Has active routines">⏰</span>}
+                  {unread[b.id] && b.id !== activeId && <span className="unread-dot" aria-label="New messages" />}
+                </span>
                 <span className="bot-sub">{lastPreview(b.id) || b.title || "No messages yet"}</span>
               </span>
             </button>
@@ -375,6 +507,11 @@ export default function Home() {
             )}
           </div>
           <span className="spacer" />
+          {!group && (
+            <button className="icon-btn routines-btn" title="Routines" aria-label="Routines" onClick={() => setShowRoutines(true)}>
+              ⏰{botRoutines.length > 0 && <span className="count">{botRoutines.length}</span>}
+            </button>
+          )}
           <button className="icon-btn" title="Reset this conversation" aria-label="Reset this conversation"
             disabled={!messages.length || streaming} onClick={resetConversation}>↺</button>
           <button className="icon-btn" title={group ? "Edit Group Chat" : "Edit Bot"} aria-label={group ? "Edit Group Chat" : "Edit Bot"}
@@ -407,6 +544,7 @@ export default function Home() {
                   )}
                   <div className="bubble">
                     {group && m.role === "assistant" && <div className="speaker">{speaker?.name ?? "Deleted Bot"}</div>}
+                    {m.routine && <div className="routine-label">⏰ Routine · {m.routine.name}{m.routine.late ? " · ran late" : ""}</div>}
                     {m.role === "assistant" ? (
                       m.content ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown> : <span className="typing"><i /><i /><i /></span>
                     ) : (
@@ -461,6 +599,21 @@ export default function Home() {
           onSave={saveBot}
           onDelete={editor.bot ? () => deleteBot(editor.bot!.id) : undefined}
           onClose={() => setEditor(null)}
+        />
+      )}
+      {showRoutines && bot && (
+        <RoutinesModal
+          bot={bot}
+          routines={botRoutines}
+          running={streaming}
+          onSave={saveRoutine}
+          onDelete={(id) => setRoutines((all) => all.filter((r) => r.id !== id))}
+          onToggle={toggleRoutine}
+          onRunNow={(id) => {
+            const r = routines.find((x) => x.id === id);
+            if (r) { setShowRoutines(false); void runRoutine(r, true); }
+          }}
+          onClose={() => setShowRoutines(false)}
         />
       )}
       {groupEditor && (
