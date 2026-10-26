@@ -20,5 +20,5 @@ export async function proxy(req: NextRequest) {
 
 export const config = {
   // Leave static assets and icons public so the login page can render
-  matcher: ["/((?!_next/static|_next/image|icon.svg|apple-icon).*)"],
+  matcher: ["/((?!_next/static|_next/image|icon.svg|apple-icon|manifest.webmanifest).*)"],
 };
