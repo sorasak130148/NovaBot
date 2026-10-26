@@ -3,9 +3,12 @@
 import { useState } from "react";
 import { BlobAvatar } from "./BlobAvatar";
 import { COLORS, EYES, TEMPLATES, type Bot, type Template } from "@/lib/bots";
+import { importFromText, shareLink } from "@/lib/share";
 
 type Props = {
   initial?: Bot;
+  // Draft for a new Bot (from a share link or import); opens straight on the edit step
+  preset?: Template;
   models: string[];
   onSave: (bot: Omit<Bot, "id"> & { id?: string }) => void;
   onDelete?: () => void;
@@ -14,16 +17,46 @@ type Props = {
 
 const BLANK: Template = { name: "", title: "", color: COLORS[0].hex, eyes: "oval", instructions: "" };
 
-export function BotEditor({ initial, models, onSave, onDelete, onClose }: Props) {
-  const [draft, setDraft] = useState<Template>(initial ?? BLANK);
-  const [step, setStep] = useState<"pick" | "edit">(initial ? "edit" : "pick");
+export function BotEditor({ initial, preset, models, onSave, onDelete, onClose }: Props) {
+  const [draft, setDraft] = useState<Template>(initial ?? preset ?? BLANK);
+  const [step, setStep] = useState<"pick" | "import" | "edit">(initial || preset ? "edit" : "pick");
+  const [importText, setImportText] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  async function runImport() {
+    setImporting(true);
+    setImportError("");
+    try {
+      setDraft(await importFromText(importText));
+      setStep("edit");
+    } catch (err) {
+      setImportError((err as Error).message);
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function copyShare() {
+    if (!initial) return;
+    // Share what's on screen, including unsaved edits
+    const link = shareLink({ ...initial, ...draft }, window.location.origin);
+    try {
+      await navigator.clipboard.writeText(link);
+    } catch {
+      window.prompt("Copy this link", link);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
   const set = (patch: Partial<Template>) => setDraft((d) => ({ ...d, ...patch }));
 
   return (
     <div className="overlay" onClick={onClose}>
       <div className="sheet" onClick={(e) => e.stopPropagation()} role="dialog" aria-label={initial ? "Edit Bot" : "New Bot"}>
         <div className="sheet-head">
-          <h2>{initial ? "Edit Bot" : step === "pick" ? "New Bot" : "Name your Bot"}</h2>
+          <h2>{initial ? "Edit Bot" : preset ? "Add this Bot?" : step === "pick" ? "New Bot" : step === "import" ? "Import Bot" : "Name your Bot"}</h2>
           <button className="icon-btn" onClick={onClose} aria-label="Close">✕</button>
         </div>
 
@@ -36,6 +69,13 @@ export function BotEditor({ initial, models, onSave, onDelete, onClose }: Props)
                 <small>Start from a blank Bot</small>
               </span>
             </button>
+            <button className="template create-own" onClick={() => setStep("import")}>
+              <span className="plus">↓</span>
+              <span>
+                <strong>Import Bot</strong>
+                <small>From a share link, an x.ai/bot link, or JSON</small>
+              </span>
+            </button>
             {TEMPLATES.map((t) => (
               <button key={t.name} className="template" onClick={() => { setDraft(t); setStep("edit"); }}>
                 <BlobAvatar color={t.color} eyes={t.eyes} size={44} />
@@ -46,6 +86,30 @@ export function BotEditor({ initial, models, onSave, onDelete, onClose }: Props)
               </button>
             ))}
           </div>
+        ) : step === "import" ? (
+          <form className="editor" onSubmit={(e) => { e.preventDefault(); runImport(); }}>
+            <label htmlFor="import-text">Paste a link or JSON</label>
+            <textarea
+              id="import-text"
+              rows={4}
+              value={importText}
+              onChange={(e) => setImportText(e.target.value)}
+              placeholder="https://x.ai/bot/...  or  a NovaBot share link"
+              autoFocus
+            />
+            <p className="hint">
+              x.ai bot pages only show the name and description, so NovaBot drafts starter instructions from the
+              description. You can edit them before saving.
+            </p>
+            {importError && <p className="hint warn">{importError}</p>}
+            <div className="sheet-actions">
+              <button type="button" className="btn ghost" onClick={() => setStep("pick")}>Back</button>
+              <span className="spacer" />
+              <button type="submit" className="btn primary" disabled={!importText.trim() || importing}>
+                {importing ? "Importing…" : "Import"}
+              </button>
+            </div>
+          </form>
         ) : (
           <form
             className="editor"
@@ -102,8 +166,11 @@ export function BotEditor({ initial, models, onSave, onDelete, onClose }: Props)
               {onDelete && !initial?.primary && (
                 <button type="button" className="btn ghost danger" onClick={onDelete}>Delete Bot</button>
               )}
+              {initial && (
+                <button type="button" className="btn ghost" onClick={copyShare}>{copied ? "Link copied" : "Share"}</button>
+              )}
               <span className="spacer" />
-              {!initial && <button type="button" className="btn ghost" onClick={() => setStep("pick")}>Back</button>}
+              {!initial && !preset && <button type="button" className="btn ghost" onClick={() => setStep("pick")}>Back</button>}
               <button type="submit" className="btn primary" disabled={!draft.name.trim()}>{initial ? "Save" : "Create"}</button>
             </div>
           </form>

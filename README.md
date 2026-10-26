@@ -47,6 +47,8 @@ Keys pass through your server on each request (never logged or stored), so visit
 - Bot list with search, a primary Bot, and Bots created from templates (Chief of Staff, Inbox Triage,
   Invoice Chaser, Researcher, Customer Support) or from scratch
 - Per-Bot color, avatar character, instructions (system prompt) and model
+- Share a Bot as a link (the whole Bot lives in the URL hash, no server storage) and import Bots from share links,
+  JSON, or public `x.ai/bot/...` pages (name + description only; starter instructions are drafted from the description)
 - Model picker in the chat header to switch models at any time; each Bot remembers its choice
 - Streaming replies (reasoning models included), markdown/GFM, stop and reset
 - Bots and chats live in localStorage, no database

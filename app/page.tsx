@@ -6,7 +6,8 @@ import remarkGfm from "remark-gfm";
 import { BlobAvatar } from "@/components/BlobAvatar";
 import { BotEditor } from "@/components/BotEditor";
 import { SettingsModal } from "@/components/SettingsModal";
-import { PRIMARY_BOT, newId, type Bot, type Msg, type Settings } from "@/lib/bots";
+import { PRIMARY_BOT, newId, type Bot, type Msg, type Settings, type Template } from "@/lib/bots";
+import { templateFromHash } from "@/lib/share";
 
 const K = { bots: "grokbot.bots", chats: "grokbot.chats", settings: "grokbot.settings", active: "grokbot.active", sessions: "grokbot.sessions" };
 
@@ -39,7 +40,7 @@ export default function Home() {
   const [serverHasKey, setServerHasKey] = useState(false);
   const [modelError, setModelError] = useState<string>();
   const [keyChecked, setKeyChecked] = useState(false);
-  const [editor, setEditor] = useState<{ bot?: Bot } | null>(null);
+  const [editor, setEditor] = useState<{ bot?: Bot; preset?: Template } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -55,6 +56,12 @@ export default function Home() {
     setSettings(load(K.settings, { apiKey: "", model: "" }));
     setActiveId(load(K.active, PRIMARY_BOT.id));
     setSessions(load(K.sessions, {}));
+    // Opened from a share link: offer to add that Bot, then drop the hash from the address bar
+    const shared = templateFromHash(window.location.hash);
+    if (shared) {
+      setEditor({ preset: shared });
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
     setReady(true);
   }, []);
 
@@ -303,6 +310,7 @@ export default function Home() {
       {editor && (
         <BotEditor
           initial={editor.bot}
+          preset={editor.preset}
           models={models}
           onSave={saveBot}
           onDelete={editor.bot ? () => deleteBot(editor.bot!.id) : undefined}
