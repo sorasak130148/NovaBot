@@ -10,6 +10,7 @@ type Props = {
   bot: Bot;
   routines: Routine[];
   running: boolean;
+  serverMode?: boolean;
   onSave: (d: Draft) => void;
   onDelete: (id: string) => void;
   onToggle: (id: string) => void;
@@ -47,7 +48,7 @@ function defaultSchedule(kind: Schedule["kind"], prev?: Schedule): Schedule {
 
 const BLANK: Draft = { name: "", prompt: "", schedule: { kind: "daily", time: "08:00" } };
 
-export function RoutinesModal({ bot, routines, running, onSave, onDelete, onToggle, onRunNow, onClose }: Props) {
+export function RoutinesModal({ bot, routines, running, serverMode, onSave, onDelete, onToggle, onRunNow, onClose }: Props) {
   const [draft, setDraft] = useState<Draft | null>(routines.length ? null : BLANK);
   // Interval unit is UI state; storing only minutes would flip "60 minutes" into "1 hour"
   const [unit, setUnit] = useState<"m" | "h">("h");
@@ -96,7 +97,11 @@ export function RoutinesModal({ bot, routines, running, onSave, onDelete, onTogg
                 </div>
               ))}
             </div>
-            <p className="hint">Routines run while NovaBot is open in a browser tab. Missed runs catch up the next time you open it.</p>
+            <p className="hint">
+              {serverMode
+                ? "Routines run on your NovaBot server on time, even when every browser is closed."
+                : "Routines run while NovaBot is open in a browser tab. Missed runs catch up the next time you open it."}
+            </p>
             <div className="sheet-actions">
               <span className="spacer" />
               <button className="btn primary" onClick={() => setDraft(BLANK)}>+ New routine</button>

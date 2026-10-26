@@ -43,6 +43,19 @@ Two ways to supply it:
 
 Keys pass through your server on each request (never logged or stored), so visitors have to trust whoever runs it.
 
+## Home server mode (single user)
+
+Set these in `.env.local` on an always-on Linux box:
+
+| Variable | Meaning |
+|---|---|
+| `NOVABOT_DATA_DIR` | Turns on server mode. Bots, groups, chats and routines are stored in `state.json` here and shared by every device you open NovaBot on |
+| `APP_PASSWORD` | Password gate for the whole site (strongly recommended, since the server key is used for every chat) |
+| `XAI_API_KEY`, `XAI_BASE_URL`, `DEFAULT_MODEL` | The server's provider settings |
+
+In server mode routines run on the server, on time, even with every browser closed.
+`deploy/novabot.service` is a systemd user unit; `deploy/update.sh` pulls, rebuilds and restarts.
+
 ## Features
 - Bot list with search, a primary Bot, and Bots created from templates (Chief of Staff, Inbox Triage,
   Invoice Chaser, Researcher, Customer Support) or from scratch

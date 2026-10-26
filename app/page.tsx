@@ -28,6 +28,12 @@ const K = {
 // Chats, sessions and the active view are keyed by Bot id, or by Group id (always "g_..." so they never collide)
 const isGroupId = (id: string) => id.startsWith("g_");
 
+type ServerStore = {
+  enabled: true;
+  rev: number;
+  data: { bots: Bot[]; groups: Group[]; chats: Record<string, Msg[]>; routines: Routine[]; unread: Record<string, boolean> };
+};
+
 function load<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
@@ -75,6 +81,11 @@ export default function Home() {
   const [routines, setRoutines] = useState<Routine[]>([]);
   const [unread, setUnread] = useState<Record<string, boolean>>({});
   const [showRoutines, setShowRoutines] = useState(false);
+  // Server mode (home server): data lives in the server's store instead of this browser
+  const [serverMode, setServerMode] = useState(false);
+  const serverRev = useRef(0);
+  const synced = useRef<Record<string, string>>({});
+  const savePending = useRef(false);
   const [showSettings, setShowSettings] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -91,33 +102,124 @@ export default function Home() {
   const routinesRef = useRef(routines);
   routinesRef.current = routines;
 
-  useEffect(() => {
-    // Older saves named the primary Bot "Grok"; rename it to match the app name
-    setBots(load(K.bots, [PRIMARY_BOT]).map((b) => (b.primary && b.name === "Grok" ? { ...b, name: PRIMARY_BOT.name } : b)));
-    setGroups(load(K.groups, []));
-    setChats(load(K.chats, {}));
-    setSettings(load(K.settings, { apiKey: "", model: "" }));
-    setActiveId(load(K.active, PRIMARY_BOT.id));
-    setSessions(load(K.sessions, {}));
-    setRoutines(load(K.routines, []));
-    setUnread(load(K.unread, {}));
-    // Opened from a share link: offer to add that Bot, then drop the hash from the address bar
-    const shared = templateFromHash(window.location.hash);
-    if (shared) {
-      setEditor({ preset: shared });
-      history.replaceState(null, "", window.location.pathname + window.location.search);
+  function applyServer(j: ServerStore) {
+    serverRev.current = j.rev;
+    synced.current = {
+      bots: JSON.stringify(j.data.bots),
+      groups: JSON.stringify(j.data.groups),
+      routines: JSON.stringify(j.data.routines),
+      unread: JSON.stringify(j.data.unread),
+    };
+    setBots(j.data.bots);
+    setGroups(j.data.groups);
+    setChats(j.data.chats);
+    setRoutines(j.data.routines);
+    setUnread(j.data.unread);
+  }
+
+  async function fetchServer(): Promise<ServerStore | null> {
+    try {
+      const r = await fetch("/api/store", { cache: "no-store" });
+      const j = r.ok ? await r.json() : null;
+      return j?.enabled ? (j as ServerStore) : null;
+    } catch {
+      return null;
     }
-    setReady(true);
+  }
+
+  useEffect(() => {
+    void (async () => {
+      setSettings(load(K.settings, { apiKey: "", model: "" }));
+      setActiveId(load(K.active, PRIMARY_BOT.id));
+      setSessions(load(K.sessions, {}));
+      const remote = await fetchServer();
+      if (remote) {
+        applyServer(remote);
+        setServerMode(true);
+      } else {
+        // Older saves named the primary Bot "Grok"; rename it to match the app name
+        setBots(load(K.bots, [PRIMARY_BOT]).map((b) => (b.primary && b.name === "Grok" ? { ...b, name: PRIMARY_BOT.name } : b)));
+        setGroups(load(K.groups, []));
+        setChats(load(K.chats, {}));
+        setRoutines(load(K.routines, []));
+        setUnread(load(K.unread, {}));
+      }
+      // Opened from a share link: offer to add that Bot, then drop the hash from the address bar
+      const shared = templateFromHash(window.location.hash);
+      if (shared) {
+        setEditor({ preset: shared });
+        history.replaceState(null, "", window.location.pathname + window.location.search);
+      }
+      setReady(true);
+    })();
   }, []);
 
-  useEffect(() => { if (ready) save(K.bots, bots); }, [ready, bots]);
-  useEffect(() => { if (ready) save(K.groups, groups); }, [ready, groups]);
-  useEffect(() => { if (ready && !streaming) save(K.chats, chats); }, [ready, chats, streaming]);
+  const local = ready && !serverMode;
+  useEffect(() => { if (local) save(K.bots, bots); }, [local, bots]);
+  useEffect(() => { if (local) save(K.groups, groups); }, [local, groups]);
+  useEffect(() => { if (local && !streaming) save(K.chats, chats); }, [local, chats, streaming]);
   useEffect(() => { if (ready) save(K.settings, settings); }, [ready, settings]);
   useEffect(() => { if (ready) save(K.active, activeId); }, [ready, activeId]);
   useEffect(() => { if (ready) save(K.sessions, sessions); }, [ready, sessions]);
-  useEffect(() => { if (ready) save(K.routines, routines); }, [ready, routines]);
-  useEffect(() => { if (ready) save(K.unread, unread); }, [ready, unread]);
+  useEffect(() => { if (local) save(K.routines, routines); }, [local, routines]);
+  useEffect(() => { if (local) save(K.unread, unread); }, [local, unread]);
+
+  // Server mode: push changed collections (debounced); the server decides routine run times
+  useEffect(() => {
+    if (!ready || !serverMode) return;
+    const current: Record<string, unknown> = { bots, groups, routines, unread };
+    const patch: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(current)) if (JSON.stringify(v) !== synced.current[k]) patch[k] = v;
+    if (!Object.keys(patch).length) return;
+    savePending.current = true;
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch("/api/store", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+        if (!res.ok) return;
+        const j = (await res.json()) as { rev: number; routines: Routine[] };
+        serverRev.current = j.rev;
+        for (const k of Object.keys(patch)) synced.current[k] = JSON.stringify(current[k]);
+        synced.current.routines = JSON.stringify(j.routines);
+        setRoutines(j.routines);
+      } finally {
+        savePending.current = false;
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [ready, serverMode, bots, groups, routines, unread]);
+
+  // Server mode: pick up changes made elsewhere (routines that ran, other devices)
+  useEffect(() => {
+    if (!ready || !serverMode) return;
+    const refresh = async () => {
+      if (streamingRef.current || savePending.current || document.hidden) return;
+      const j = await fetchServer();
+      if (j && j.rev !== serverRev.current && !streamingRef.current && !savePending.current) applyServer(j);
+    };
+    const timer = setInterval(refresh, 15_000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [ready, serverMode]);
+
+  // Server mode: save a finished turn (append-only, so it never overwrites routine results)
+  function persistTurn(conv: string, msgs: Msg[]) {
+    if (!serverMode || !msgs.length) return;
+    void fetch("/api/store/chats", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conv, messages: msgs }),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { rev: number } | null) => { if (j) serverRev.current = j.rev; });
+  }
+  function persistDelete(conv: string) {
+    if (serverMode) void fetch(`/api/store/chats?conv=${encodeURIComponent(conv)}`, { method: "DELETE" });
+  }
 
   const keyHeader = useMemo<Record<string, string>>(
     () => {
@@ -167,7 +269,7 @@ export default function Home() {
   // Scheduler: only one tab (the Web Locks holder) runs routines; checks every 20s and on load,
   // so runs missed while the site was closed catch up right away.
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || serverMode) return;
     let leader = !("locks" in navigator);
     let release: (() => void) | undefined;
     if (!leader) {
@@ -188,7 +290,7 @@ export default function Home() {
       clearInterval(timer);
       release?.();
     };
-  }, [ready]);
+  }, [ready, serverMode]);
 
   const setMessages = useCallback(
     (id: string, fn: (prev: Msg[]) => Msg[]) => setChats((c) => ({ ...c, [id]: fn(c[id] ?? []) })),
@@ -206,7 +308,13 @@ export default function Home() {
   }
 
   // Streams one reply into the last message of conversation `id`; returns the full text.
-  async function streamInto(id: string, body: { model: string; system: string; messages: { role: string; content: string }[] }, sessionId: string, signal: AbortSignal) {
+  async function streamInto(
+    id: string,
+    body: { model: string; system: string; messages: { role: string; content: string }[] },
+    sessionId: string,
+    signal: AbortSignal,
+    acc: { text: string } = { text: "" },
+  ) {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-session-id": sessionId, ...keyHeader },
@@ -217,38 +325,40 @@ export default function Home() {
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    let text = "";
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       const chunk = decoder.decode(value, { stream: true });
-      text += chunk;
+      acc.text += chunk;
       setMessages(id, (prev) => {
         const last = prev[prev.length - 1];
         return [...prev.slice(0, -1), { ...last, content: last.content + chunk }];
       });
     }
-    return text;
+    return acc.text;
   }
 
   const failMessage = (err: unknown) => `Bot failed to respond. ${(err as Error).message}`;
 
   // One reply from a single Bot to `transcript` (which already ends with the user's message).
-  // Returns an error message, or null on success/abort.
-  async function runBotTurn(b: Bot, transcript: Msg[], signal: AbortSignal): Promise<string | null> {
+  // Returns the reply as stored (partial text if stopped) and an error message, if any.
+  async function runBotTurn(b: Bot, transcript: Msg[], signal: AbortSignal): Promise<{ reply: Msg | null; error: string | null }> {
     setMessages(b.id, () => [...transcript, { role: "assistant", content: "" }]);
+    const acc = { text: "" };
     try {
       await streamInto(
         b.id,
         { model: modelFor(b), system: b.instructions, messages: transcript.map(({ role, content }) => ({ role, content })) },
         sessionFor(b.id),
         signal,
+        acc,
       );
-      return null;
+      return { reply: { role: "assistant", content: acc.text }, error: null };
     } catch (err) {
-      if ((err as Error).name === "AbortError") return null;
-      setMessages(b.id, (prev) => [...prev.slice(0, -1), { role: "assistant", content: failMessage(err), error: true }]);
-      return (err as Error).message.slice(0, 200);
+      if ((err as Error).name === "AbortError") return { reply: acc.text ? { role: "assistant", content: acc.text } : null, error: null };
+      const reply: Msg = { role: "assistant", content: failMessage(err), error: true };
+      setMessages(b.id, (prev) => [...prev.slice(0, -1), reply]);
+      return { reply, error: (err as Error).message.slice(0, 200) };
     }
   }
 
@@ -278,7 +388,7 @@ export default function Home() {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
-      const error = await runBotTurn(b, transcript, ctrl.signal);
+      const { error } = await runBotTurn(b, transcript, ctrl.signal);
       setRoutines((all) => all.map((x) => (x.id === r.id ? { ...x, lastError: error ?? undefined } : x)));
       if (!manual) {
         setUnread((u) => ({ ...u, [b.id]: true }));
@@ -306,9 +416,12 @@ export default function Home() {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
+    const userMsg = transcript[transcript.length - 1];
+    const produced: Msg[] = [];
     try {
       if (!group) {
-        await runBotTurn(bot!, transcript, ctrl.signal);
+        const { reply } = await runBotTurn(bot!, transcript, ctrl.signal);
+        if (reply) produced.push(reply);
         return;
       }
 
@@ -316,6 +429,7 @@ export default function Home() {
       for (const speaker of pickSpeakers(text, members)) {
         if (ctrl.signal.aborted) break;
         setMessages(id, (prev) => [...prev, { role: "assistant", content: "", botId: speaker.id }]);
+        const acc = { text: "" };
         try {
           const reply = await streamInto(
             id,
@@ -326,14 +440,23 @@ export default function Home() {
             },
             sessionFor(`${id}:${speaker.id}`),
             ctrl.signal,
+            acc,
           );
-          transcript.push({ role: "assistant", content: reply, botId: speaker.id });
+          const msg: Msg = { role: "assistant", content: reply, botId: speaker.id };
+          transcript.push(msg);
+          produced.push(msg);
         } catch (err) {
-          if ((err as Error).name === "AbortError") break;
-          setMessages(id, (prev) => [...prev.slice(0, -1), { role: "assistant", content: failMessage(err), error: true, botId: speaker.id }]);
+          if ((err as Error).name === "AbortError") {
+            if (acc.text) produced.push({ role: "assistant", content: acc.text, botId: speaker.id });
+            break;
+          }
+          const msg: Msg = { role: "assistant", content: failMessage(err), error: true, botId: speaker.id };
+          produced.push(msg);
+          setMessages(id, (prev) => [...prev.slice(0, -1), msg]);
         }
       }
     } finally {
+      persistTurn(id, [userMsg, ...produced]);
       setStreaming(false);
       abortRef.current = null;
     }
@@ -342,6 +465,7 @@ export default function Home() {
   function resetConversation() {
     if (!confirm("Reset this conversation?")) return;
     setMessages(convId, () => []);
+    persistDelete(convId);
     setSessions((all) => Object.fromEntries(Object.entries(all).filter(([k]) => k !== convId && !k.startsWith(`${convId}:`))));
   }
 
@@ -384,6 +508,7 @@ export default function Home() {
     setRoutines((all) => all.filter((r) => r.botId !== id));
     setGroups((all) => all.map((g) => ({ ...g, memberIds: g.memberIds.filter((m) => m !== id) })));
     setChats(({ [id]: _, ...rest }) => rest);
+    persistDelete(id);
     setActiveId(PRIMARY_BOT.id);
     setEditor(null);
   }
@@ -403,6 +528,7 @@ export default function Home() {
     if (!confirm("Delete this Group Chat? Its messages will be removed. The Bots stay.")) return;
     setGroups((all) => all.filter((g) => g.id !== id));
     setChats(({ [id]: _, ...rest }) => rest);
+    persistDelete(id);
     setActiveId(PRIMARY_BOT.id);
     setGroupEditor(null);
   }
@@ -606,12 +732,20 @@ export default function Home() {
           bot={bot}
           routines={botRoutines}
           running={streaming}
+          serverMode={serverMode}
           onSave={saveRoutine}
           onDelete={(id) => setRoutines((all) => all.filter((r) => r.id !== id))}
           onToggle={toggleRoutine}
           onRunNow={(id) => {
             const r = routines.find((x) => x.id === id);
-            if (r) { setShowRoutines(false); void runRoutine(r, true); }
+            if (!r) return;
+            setShowRoutines(false);
+            if (!serverMode) return void runRoutine(r, true);
+            setStreaming(true);
+            void fetch("/api/routines/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) })
+              .then(() => fetchServer())
+              .then((j) => { if (j) applyServer(j); })
+              .finally(() => setStreaming(false));
           }}
           onClose={() => setShowRoutines(false)}
         />

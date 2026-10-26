@@ -1,0 +1,17 @@
+# systemd user service for a NovaBot home server.
+# Install: cp deploy/novabot.service ~/.config/systemd/user/ && systemctl --user enable --now novabot
+# Needs: `loginctl enable-linger $USER` so it runs without an active login.
+[Unit]
+Description=NovaBot (server mode)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/novabot
+Environment=PATH=%h/.local/node/bin:/usr/bin:/bin
+Environment=NODE_ENV=production
+ExecStart=%h/.local/node/bin/node node_modules/next/dist/bin/next start -H 0.0.0.0 -p 3000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

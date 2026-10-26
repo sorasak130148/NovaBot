@@ -16,9 +16,14 @@ export function resolveUpstream(req: Request): Upstream {
   if (provider) {
     return { baseUrl: provider.baseUrl, key: clientKey, defaultModel: provider.defaultModel };
   }
+  return { ...serverUpstream(), key: clientKey || process.env.XAI_API_KEY || null };
+}
+
+// The server's own endpoint and key from .env (used by server-side routines).
+export function serverUpstream(): Upstream {
   return {
     baseUrl: ENV_BASE_URL || PROVIDERS[0].baseUrl,
-    key: clientKey || process.env.XAI_API_KEY || null,
+    key: process.env.XAI_API_KEY || null,
     defaultModel: ENV_DEFAULT_MODEL || PROVIDERS[0].defaultModel,
   };
 }
